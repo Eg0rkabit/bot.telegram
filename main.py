@@ -1,7 +1,7 @@
 import os
 import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
 from dotenv import load_dotenv
 
@@ -11,9 +11,7 @@ API_TOKEN = os.getenv('API_TOKEN')
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# user_states: user_id -> dict (current state, rename targets и т.д.)
 user_states = {}
-
 GROUPS_PER_PAGE = 5
 IMAGES_PER_PAGE = 5
 
@@ -21,7 +19,8 @@ def main_menu_kb():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🗂 Мои группы", callback_data="groups_0"),
-        InlineKeyboardButton("➕ Создать группу", callback_data="create_group")
+        InlineKeyboardButton("➕ Создать группу", callback_data="create_group"),
+        InlineKeyboardButton("🔍 Поиск картинки", callback_data="search_img")
     )
     return kb
 
@@ -31,8 +30,9 @@ def groups_kb(groups, page, total):
         kb.row(
             InlineKeyboardButton(f"📁 {g}", callback_data=f"open_group:{g}:0"),
             InlineKeyboardButton("✏️", callback_data=f"rename_group:{g}"),
-            InlineKeyboardButton("❌", callback_data=f"delete_group:{g}")
+            InlineKeyboardButton("❌", callback_data=f"delete_group:{g}"),
         )
+        kb.add(InlineKeyboardButton("🔗 Поделиться", callback_data=f"share_group:{g}"))
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("←", callback_data=f"groups_{page-1}"))
@@ -67,6 +67,19 @@ def images_kb(images, group, page, total):
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
     user_states[message.from_user.id] = {}
+    args = message.get_args()
+    if args and args.startswith("share_"):
+        group = args.split("share_", 1)[1]
+        user_id = str(message.from_user.id)
+        group_path = f"images/{user_id}/{group}"
+        if not os.path.exists(group_path):
+            await message.reply("Группа не найдена.", reply_markup=main_menu_kb())
+            return
+        images = sorted([img[:-4] for img in os.listdir(group_path) if img.endswith('.jpg')])
+        for img in images:
+            with open(f"images/{user_id}/{group}/{img}.jpg", "rb") as f:
+                await message.reply_photo(f, caption=f"<b>{img}</b> из <b>{group}</b>", parse_mode="HTML")
+        return
     text = (
         "👋 <b>Добро пожаловать!</b>\n\n"
         "Я — твой фото-органайзер!\n\n"
@@ -187,6 +200,35 @@ async def open_group(call: types.CallbackQuery):
         reply_markup=images_kb(images_on_page, group, page, total)
     )
 
+@dp.callback_query_handler(lambda call: call.data == "search_img")
+async def search_image_start(call: types.CallbackQuery):
+    user_states[call.from_user.id] = {"await": "search_img"}
+    await call.message.edit_text("Введи название картинки для поиска:",
+                                 reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 В меню", callback_data="back_main")))
+
+@dp.message_handler(lambda msg: user_states.get(msg.from_user.id, {}).get("await") == "search_img")
+async def search_image_finish(message: types.Message):
+    query = message.text.strip().lower()
+    if len(query) < 2:
+        await message.reply("Слишком короткий запрос. Введи хотя бы 2 символа.")
+        return
+    user_id = str(message.from_user.id)
+    found = []
+    base_path = f"images/{user_id}"
+    for group in os.listdir(base_path):
+        group_path = os.path.join(base_path, group)
+        for img in os.listdir(group_path):
+            if img.endswith('.jpg') and query in img.lower():
+                found.append((group, img))
+    if not found:
+        await message.reply("Картинок не найдено.", reply_markup=main_menu_kb())
+        user_states[message.from_user.id] = {}
+        return
+    for group, img in found:
+        with open(f"images/{user_id}/{group}/{img}", "rb") as f:
+            await message.reply_photo(f, caption=f"<b>{img[:-4]}</b> в группе <b>{group}</b>", parse_mode="HTML")
+    user_states[message.from_user.id] = {}
+
 @dp.callback_query_handler(lambda call: call.data.startswith("add_img:"))
 async def add_image_start(call: types.CallbackQuery):
     group = call.data.split(":")[1]
@@ -281,6 +323,13 @@ async def rename_img_finish(message: types.Message):
     os.rename(old_path, new_path)
     user_states[message.from_user.id] = {}
     await message.reply(f"Картинка <b>{old_name}</b> переименована в <b>{new_name}</b>!", parse_mode="HTML", reply_markup=main_menu_kb())
+
+@dp.callback_query_handler(lambda call: call.data.startswith("share_group:"))
+async def share_group(call: types.CallbackQuery):
+    group = call.data.split(":")[1]
+    bot_username = (await bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start=share_{group}"
+    await call.message.answer(f"🔗 Ссылка для доступа к группе <b>{group}</b>:\n{link}", parse_mode="HTML")
 
 if __name__ == "__main__":
     os.makedirs("images", exist_ok=True)
