@@ -4,6 +4,36 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
 from dotenv import load_dotenv
+from aiogram.utils.exceptions import TelegramAPIError
+from aiogram.utils.exceptions import MessageNotModified
+
+@dp.callback_query_handler(lambda call: call.data.startswith("groups_"))
+async def show_groups(call: types.CallbackQuery):
+    user_id = str(call.from_user.id)
+    page = int(call.data.split("_")[1])
+    groups_dir = f'images/{user_id}'
+    groups = sorted(os.listdir(groups_dir)) if os.path.exists(groups_dir) else []
+    total = len(groups)
+    groups_on_page = groups[page*GROUPS_PER_PAGE:(page+1)*GROUPS_PER_PAGE]
+    if not groups:
+        try:
+            await call.message.edit_text("У тебя нет ни одной группы!", reply_markup=main_menu_kb())
+        except MessageNotModified:
+            pass
+        return
+    try:
+        await call.message.edit_text(
+            "<b>Твои группы:</b>",
+            parse_mode="HTML",
+            reply_markup=groups_kb(groups_on_page, page, total)
+        )
+    except MessageNotModified:
+        pass
+
+@dp.errors_handler()
+async def global_error_handler(update, exception):
+    logging.exception(f'Произошла ошибка: {exception}')
+    return True  # Ошибку обработали, бот не падает
 
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
